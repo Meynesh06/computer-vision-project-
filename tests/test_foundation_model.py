@@ -150,9 +150,20 @@ def test_load_backbone_default_path_pools_virchow_tokens_into_embedding(monkeypa
 
     model = load_backbone("hf-hub:paige-ai/Virchow", device="cpu")
     images = torch.rand(3, 3, 8, 8)
+
+    # Independently obtain the fake backbone's raw, unpooled per-token output
+    # (the same deterministic nn.Linear forward pass the wrapper itself would
+    # call) so we can compute the expected pooled embedding ourselves, rather
+    # than trusting the production code's own slicing/pooling logic.
+    raw_tokens = model.backbone(images)  # [batch, num_tokens=5, embed_dim=4]
+    expected_cls_token = raw_tokens[:, 0]  # first token is CLS
+    expected_patch_mean = raw_tokens[:, 1:].mean(dim=1)  # mean of the remaining patch tokens
+    expected_embeddings = torch.cat([expected_cls_token, expected_patch_mean], dim=-1)
+
     embeddings = model(images)
 
     assert embeddings.shape == (3, 8)  # 2 * embed_dim (cls concat mean-pooled patches)
+    torch.testing.assert_close(embeddings, expected_embeddings)
 
 
 def test_load_backbone_default_path_non_virchow_model_gets_no_extra_kwargs(
