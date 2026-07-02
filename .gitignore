@@ -1,0 +1,3 @@
+# Feynman skills bundle — installed via `curl -fsSL https://feynman.is/install-skills | bash -s -- --repo`
+# reproducible from that command, not vendored into the repo
+.agents/
