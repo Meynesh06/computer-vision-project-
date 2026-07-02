@@ -1,3 +1,9 @@
 # Feynman skills bundle — installed via `curl -fsSL https://feynman.is/install-skills | bash -s -- --repo`
 # reproducible from that command, not vendored into the repo
 .agents/
+
+# Local git worktrees used for isolated development
+.worktrees/
+
+# Subagent-driven-development scratch state (progress ledger, briefs, reports)
+.superpowers/
