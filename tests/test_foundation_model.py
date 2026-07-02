@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
+from timm.layers import SwiGLUPacked
 from torch.utils.data import DataLoader, TensorDataset
 
 from tissue_classifier.foundation_model import (
@@ -87,3 +88,109 @@ def test_extract_embeddings_uses_cache_on_second_call(tmp_path):
     )
 
     assert np.allclose(second_embeddings, 0)
+
+
+class FakeRawTokenBackbone(nn.Module):
+    """Mimics Virchow's *unpooled* forward output: a raw per-token sequence
+    `[batch, num_tokens, embed_dim]` (1 CLS token + patch tokens), rather than
+    a pooled `[batch, embed_dim]` embedding -- this is what timm.create_model
+    actually returns for the real Virchow checkpoint before any pooling logic
+    is applied."""
+
+    def __init__(self, embed_dim=4, num_tokens=5):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_tokens = num_tokens
+        self.pretrained_cfg = {
+            "input_size": (3, 8, 8),
+            "mean": (0.5, 0.5, 0.5),
+            "std": (0.5, 0.5, 0.5),
+            "crop_pct": 1.0,
+            "interpolation": "bilinear",
+        }
+        self.linear = nn.Linear(3 * 8 * 8, embed_dim * num_tokens)
+
+    def forward(self, x):
+        batch = x.shape[0]
+        out = self.linear(x.flatten(1))
+        return out.view(batch, self.num_tokens, self.embed_dim)
+
+
+def test_load_backbone_default_path_applies_virchow_swiglu_kwargs(monkeypatch):
+    """Bug 1: Virchow needs mlp_layer=SwiGLUPacked, act_layer=torch.nn.SiLU
+    passed to timm.create_model, or the state_dict fails to load (shape
+    mismatch in the MLP fc2 weight)."""
+    captured_kwargs = {}
+
+    def fake_create_model(model_name, pretrained, num_classes, **kwargs):
+        captured_kwargs.update(kwargs)
+        return FakeRawTokenBackbone()
+
+    monkeypatch.setattr(
+        "tissue_classifier.foundation_model.timm.create_model", fake_create_model
+    )
+
+    load_backbone("hf-hub:paige-ai/Virchow", device="cpu")
+
+    assert captured_kwargs.get("mlp_layer") is SwiGLUPacked
+    assert captured_kwargs.get("act_layer") is torch.nn.SiLU
+
+
+def test_load_backbone_default_path_pools_virchow_tokens_into_embedding(monkeypatch):
+    """Bug 2: Virchow's forward() returns the raw unpooled token sequence, not
+    a usable embedding. load_backbone's default path must wrap it so the
+    final embedding is cat([cls_token, patch_tokens.mean(dim=1)], dim=-1)."""
+
+    def fake_create_model(model_name, pretrained, num_classes, **kwargs):
+        return FakeRawTokenBackbone(embed_dim=4, num_tokens=5)
+
+    monkeypatch.setattr(
+        "tissue_classifier.foundation_model.timm.create_model", fake_create_model
+    )
+
+    model = load_backbone("hf-hub:paige-ai/Virchow", device="cpu")
+    images = torch.rand(3, 3, 8, 8)
+    embeddings = model(images)
+
+    assert embeddings.shape == (3, 8)  # 2 * embed_dim (cls concat mean-pooled patches)
+
+
+def test_load_backbone_default_path_non_virchow_model_gets_no_extra_kwargs(
+    monkeypatch,
+):
+    """No regression: any model_name not in the Virchow-specific registry must
+    still get timm.create_model called with today's plain kwargs, no
+    SwiGLU/pooling logic applied."""
+    captured_kwargs = {}
+
+    def fake_create_model(model_name, pretrained, num_classes, **kwargs):
+        captured_kwargs.update(kwargs)
+        return FakeBackbone()
+
+    monkeypatch.setattr(
+        "tissue_classifier.foundation_model.timm.create_model", fake_create_model
+    )
+
+    model = load_backbone("fake/backbone", device="cpu")
+
+    assert captured_kwargs == {}
+    assert isinstance(model, FakeBackbone)
+
+
+def test_explicit_loader_bypasses_default_virchow_logic(monkeypatch):
+    """The loader parameter's existing contract must not change: when a
+    caller passes an explicit loader, timm.create_model must not be touched
+    at all, even for the Virchow model_name."""
+
+    def explode(*args, **kwargs):
+        raise AssertionError(
+            "timm.create_model should not be called when an explicit loader is provided"
+        )
+
+    monkeypatch.setattr(
+        "tissue_classifier.foundation_model.timm.create_model", explode
+    )
+
+    model = load_backbone("hf-hub:paige-ai/Virchow", device="cpu", loader=fake_loader)
+
+    assert isinstance(model, FakeBackbone)
