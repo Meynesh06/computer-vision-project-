@@ -62,6 +62,24 @@ hardcoded — can be scaled up later if more compute becomes available.
   code takes plain paths/configs so it runs the same way locally, in a Colab
   notebook, or on a GCP VM.
 
+### Device & precision handling (per environment)
+
+Mac and cloud environments require different device/precision settings, and
+the config for each should say so explicitly rather than relying on generic
+auto-detection everywhere:
+
+- `configs/local_smoke.yaml`: `device: auto`, resolving to `mps` if
+  available else `cpu` (Mac has no CUDA). Small batch size, fp32 — MPS/CPU
+  support for bf16 mixed precision is unreliable, so mixed precision is not
+  used locally.
+- `configs/pretrain_ssl.yaml` and `configs/linear_probe.yaml` (cloud):
+  `device: cuda`, required. If CUDA is requested but unavailable at
+  startup, the run fails fast with a clear error rather than silently
+  falling back to CPU — a silent fallback would turn a multi-hour GPU job
+  into a multi-day CPU one without anyone noticing until much later. Uses
+  bfloat16 mixed precision on CUDA, matching leJEPA's own recommended
+  training configuration (AdamW, lr 5e-4, bf16, cosine schedule).
+
 ## Repo Structure
 
 ```
@@ -105,8 +123,9 @@ Environment/package management: **uv**.
 - Corrupt/unreadable image files are skipped and logged, not allowed to
   crash a 100K-image epoch.
 - Missing/empty class folders fail fast at startup, not mid-epoch.
-- No CUDA available (Mac) auto-falls back to MPS/CPU with a smaller batch
-  size via config, rather than erroring.
+- Device selection follows the per-environment rules in "Device & precision
+  handling" above: local configs resolve to MPS/CPU automatically, cloud
+  configs require CUDA and fail fast if it's missing.
 - Fixed seed in config; the local stratified subset is deterministic across
   runs, not re-randomized each time.
 
