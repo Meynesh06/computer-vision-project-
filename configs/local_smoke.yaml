@@ -2,7 +2,7 @@ data_dir: data/local_subset
 device: auto
 precision: fp32
 backbone: hf-hub:paige-ai/Virchow
-batch_size: 8
+batch_size: 2
 seed: 0
 epochs_probe: 5
 lr_probe: 0.01
