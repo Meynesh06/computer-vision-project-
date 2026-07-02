@@ -1,0 +1,27 @@
+[project]
+name = "tissue-classifier"
+version = "0.1.0"
+description = "Fine-tune an open pathology foundation model for 9-class NCT-CRC-HE-100K tissue classification"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.2",
+    "timm>=1.0",
+    "peft>=0.11",
+    "pyyaml>=6.0",
+    "scikit-learn>=1.4",
+    "pillow>=10.0",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tissue_classifier"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
