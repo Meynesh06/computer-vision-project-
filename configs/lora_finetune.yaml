@@ -5,6 +5,8 @@ precision: auto
 backbone: hf-hub:paige-ai/Virchow
 batch_size: 32
 seed: 0
+epochs_probe: 20
+lr_probe: 0.01
 epochs_lora: 50
 lr_lora: 0.0001
 lora_r: 8

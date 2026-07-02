@@ -7,5 +7,10 @@ batch_size: 64
 seed: 0
 epochs_probe: 20
 lr_probe: 0.01
+epochs_lora: 50
+lr_lora: 0.0001
+lora_r: 8
+lora_alpha: 16
+target_modules: ["qkv"]
 cache_dir: outputs/cache
 checkpoint_dir: outputs/checkpoints

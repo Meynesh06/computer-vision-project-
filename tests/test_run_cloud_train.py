@@ -1,11 +1,75 @@
 from pathlib import Path
 
+import pytest
 import torch
 import torch.nn as nn
 from PIL import Image
 
+from tissue_classifier.config import load_config
 from tissue_classifier.data import CLASS_NAMES
 from scripts.run_cloud_train import load_checkpoint, save_checkpoint
+
+# Every key `run_cloud_train.main()` reads off `config` before/while running
+# the combined probe+LoRA pipeline (including the train/eval split via
+# `eval_data_dir`). Any shipped config missing one of these blows up with a
+# KeyError partway through main() -- see the lora_finetune.yaml /
+# linear_probe.yaml key-set bug this test guards against.
+#
+# `configs/local_smoke.yaml` is intentionally excluded here: it is consumed
+# by `scripts/run_local_smoke.py`'s main() instead, which evaluates on the
+# same dataset it trains on and therefore has no `eval_data_dir` key.
+REQUIRED_CLOUD_TRAIN_CONFIG_KEYS = [
+    "data_dir",
+    "eval_data_dir",
+    "device",
+    "precision",
+    "backbone",
+    "batch_size",
+    "seed",
+    "epochs_probe",
+    "lr_probe",
+    "epochs_lora",
+    "lr_lora",
+    "lora_r",
+    "lora_alpha",
+    "target_modules",
+    "cache_dir",
+    "checkpoint_dir",
+]
+
+# Keys read by `scripts/run_local_smoke.py`'s main() -- same combined
+# pipeline, but no train/eval split, so no `eval_data_dir`.
+REQUIRED_LOCAL_SMOKE_CONFIG_KEYS = [
+    key for key in REQUIRED_CLOUD_TRAIN_CONFIG_KEYS if key != "eval_data_dir"
+]
+
+
+@pytest.mark.parametrize(
+    "config_path",
+    [
+        "configs/linear_probe.yaml",
+        "configs/lora_finetune.yaml",
+    ],
+)
+def test_shipped_cloud_config_has_all_keys_main_needs(config_path):
+    config = load_config(config_path)
+    missing = [
+        key for key in REQUIRED_CLOUD_TRAIN_CONFIG_KEYS if key not in config
+    ]
+    assert not missing, (
+        f"{config_path} is missing keys read by run_cloud_train.main(): {missing}"
+    )
+
+
+def test_shipped_local_smoke_config_has_all_keys_main_needs():
+    config = load_config("configs/local_smoke.yaml")
+    missing = [
+        key for key in REQUIRED_LOCAL_SMOKE_CONFIG_KEYS if key not in config
+    ]
+    assert not missing, (
+        f"configs/local_smoke.yaml is missing keys read by "
+        f"run_local_smoke.main(): {missing}"
+    )
 
 
 class FakeBackboneWithQKV(nn.Module):
