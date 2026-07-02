@@ -1,0 +1,15 @@
+data_dir: data/raw/NCT-CRC-HE-100K
+eval_data_dir: data/raw/CRC-VAL-HE-7K
+device: auto
+precision: auto
+backbone: hf-hub:paige-ai/Virchow
+batch_size: 32
+seed: 0
+epochs_lora: 50
+lr_lora: 0.0001
+lora_r: 8
+lora_alpha: 16
+target_modules: ["qkv"]
+checkpoint_every_steps: 200
+cache_dir: outputs/cache
+checkpoint_dir: outputs/checkpoints

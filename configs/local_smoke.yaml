@@ -1,0 +1,15 @@
+data_dir: data/local_subset
+device: auto
+precision: fp32
+backbone: hf-hub:paige-ai/Virchow
+batch_size: 8
+seed: 0
+epochs_probe: 5
+lr_probe: 0.01
+epochs_lora: 2
+lr_lora: 0.0001
+lora_r: 4
+lora_alpha: 8
+target_modules: ["qkv"]
+cache_dir: outputs/local_smoke/cache
+checkpoint_dir: outputs/local_smoke/checkpoints

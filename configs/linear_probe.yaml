@@ -1,0 +1,11 @@
+data_dir: data/raw/NCT-CRC-HE-100K
+eval_data_dir: data/raw/CRC-VAL-HE-7K
+device: auto
+precision: auto
+backbone: hf-hub:paige-ai/Virchow
+batch_size: 64
+seed: 0
+epochs_probe: 20
+lr_probe: 0.01
+cache_dir: outputs/cache
+checkpoint_dir: outputs/checkpoints
