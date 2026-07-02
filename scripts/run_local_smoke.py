@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
+import torch
 from torch.utils.data import DataLoader
 
 from tissue_classifier.config import load_config, resolve_device, resolve_precision
@@ -23,6 +24,7 @@ from tissue_classifier.probe import evaluate_probe, train_probe
 
 def main(config_path: str, backbone_loader: Callable | None = None) -> dict:
     config = load_config(config_path)
+    torch.manual_seed(config["seed"])
     device = resolve_device(config["device"])
     resolve_precision(config["precision"], device)  # validated, not yet applied at this scale
 
@@ -56,8 +58,13 @@ def main(config_path: str, backbone_loader: Callable | None = None) -> dict:
     classifier = LoRAClassifier(
         lora_model, embedding_dim=embeddings.shape[1], num_classes=len(CLASS_NAMES)
     )
+    shuffle_generator = torch.Generator()
+    shuffle_generator.manual_seed(config["seed"])
     shuffled_dataloader = DataLoader(
-        dataset, batch_size=config["batch_size"], shuffle=True
+        dataset,
+        batch_size=config["batch_size"],
+        shuffle=True,
+        generator=shuffle_generator,
     )
     trained_classifier = train_lora(
         classifier,
