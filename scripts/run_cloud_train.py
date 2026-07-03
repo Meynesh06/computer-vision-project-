@@ -1,4 +1,6 @@
+import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Callable
@@ -12,6 +14,8 @@ from tissue_classifier.finetune import (
     LoRAClassifier,
     attach_lora,
     evaluate_lora,
+    get_lora_state,
+    load_lora_state,
     train_lora,
 )
 from tissue_classifier.foundation_model import (
@@ -23,6 +27,7 @@ from tissue_classifier.metrics import compute_metrics
 from tissue_classifier.probe import evaluate_probe, train_probe
 
 CHECKPOINT_FILENAME = "lora_checkpoint.pt"
+RESULTS_FILENAME = "results.json"
 
 
 def save_checkpoint(state: dict, checkpoint_dir: str | Path) -> None:
@@ -41,6 +46,56 @@ def load_checkpoint(checkpoint_dir: str | Path) -> dict | None:
     return torch.load(checkpoint_path, weights_only=True)
 
 
+def _gcs_uri(bucket: str, filename: str) -> str:
+    return f"{bucket.rstrip('/')}/{filename}"
+
+
+def sync_checkpoint_to_gcs(local_path: str | Path, bucket: str) -> None:
+    """Best-effort push of the (now adapter-only, so small) checkpoint to
+    GCS. Fails soft: a transient network/gsutil error shouldn't kill a
+    training run -- the monitor script is responsible for surfacing repeated
+    sync failures."""
+    try:
+        subprocess.run(
+            ["gsutil", "cp", str(local_path), _gcs_uri(bucket, CHECKPOINT_FILENAME)],
+            check=True,
+            capture_output=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        print(f"warning: checkpoint GCS sync failed: {exc}", file=sys.stderr)
+
+
+def maybe_pull_checkpoint_from_gcs(checkpoint_dir: str | Path, bucket: str | None) -> None:
+    """Pull the latest checkpoint down from GCS if no local checkpoint exists
+    yet -- lets a brand-new/replacement VM resume a preempted run."""
+    if not bucket:
+        return
+    local_path = Path(checkpoint_dir) / CHECKPOINT_FILENAME
+    if local_path.exists():
+        return
+    try:
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["gsutil", "cp", _gcs_uri(bucket, CHECKPOINT_FILENAME), str(local_path)],
+            check=True,
+            capture_output=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        print(f"warning: checkpoint GCS pull failed: {exc}", file=sys.stderr)
+
+
+def sync_results_to_gcs(results: dict, bucket: str) -> None:
+    try:
+        subprocess.run(
+            ["gsutil", "cp", "-", _gcs_uri(bucket, RESULTS_FILENAME)],
+            input=json.dumps(results).encode(),
+            check=True,
+            capture_output=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        print(f"warning: results GCS sync failed: {exc}", file=sys.stderr)
+
+
 def main(
     config_path: str,
     backbone_loader: Callable | None = None,
@@ -50,6 +105,9 @@ def main(
     torch.manual_seed(config["seed"])
     device = resolve_device(config["device"])
     resolve_precision(config["precision"], device)  # validated, not yet applied at this scale
+
+    gcs_bucket = config.get("gcs_checkpoint_bucket")
+    num_gpus = config.get("num_gpus", 1)
 
     backbone = load_backbone(config["backbone"], device, loader=backbone_loader)
     transform = get_transform(backbone)
@@ -87,6 +145,8 @@ def main(
     )
 
     checkpoint_dir = config["checkpoint_dir"]
+    if not fresh:
+        maybe_pull_checkpoint_from_gcs(checkpoint_dir, gcs_bucket)
     checkpoint = None if fresh else load_checkpoint(checkpoint_dir)
 
     lora_backbone = load_backbone(config["backbone"], device, loader=backbone_loader)
@@ -101,8 +161,17 @@ def main(
         embedding_dim=train_embeddings.shape[1],
         num_classes=len(CLASS_NAMES),
     )
+    start_epoch = 0
+    optimizer_state = None
     if checkpoint is not None:
-        classifier.load_state_dict(checkpoint["model_state"])
+        load_lora_state(classifier, checkpoint["model_state"])
+        start_epoch = checkpoint["epoch"]
+        optimizer_state = checkpoint.get("optimizer_state")
+
+    def on_checkpoint(state: dict) -> None:
+        save_checkpoint(state, checkpoint_dir)
+        if gcs_bucket:
+            sync_checkpoint_to_gcs(Path(checkpoint_dir) / CHECKPOINT_FILENAME, gcs_bucket)
 
     shuffle_generator = torch.Generator()
     shuffle_generator.manual_seed(config["seed"])
@@ -118,10 +187,14 @@ def main(
         epochs=config["epochs_lora"],
         lr=config["lr_lora"],
         device=device,
+        start_epoch=start_epoch,
+        optimizer_state=optimizer_state,
+        checkpoint_every_steps=config.get("checkpoint_every_steps"),
+        on_checkpoint=on_checkpoint,
+        num_gpus=num_gpus,
     )
-    save_checkpoint(
-        {"epoch": config["epochs_lora"], "model_state": trained_classifier.state_dict()},
-        checkpoint_dir,
+    on_checkpoint(
+        {"epoch": config["epochs_lora"], "model_state": get_lora_state(trained_classifier)}
     )
 
     lora_y_true, lora_y_pred = evaluate_lora(
@@ -131,7 +204,10 @@ def main(
         lora_y_true.tolist(), lora_y_pred.tolist(), CLASS_NAMES
     )
 
-    return {"probe_metrics": probe_metrics, "lora_metrics": lora_metrics}
+    results = {"probe_metrics": probe_metrics, "lora_metrics": lora_metrics}
+    if gcs_bucket:
+        sync_results_to_gcs(results, gcs_bucket)
+    return results
 
 
 if __name__ == "__main__":

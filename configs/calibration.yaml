@@ -1,0 +1,27 @@
+# Short (2-epoch), small-subset config used only to empirically benchmark
+# GPU tiers on GCP before committing to the full 50-epoch run in
+# lora_finetune.yaml. Shares the same architecture keys (backbone, lora_r,
+# lora_alpha, target_modules) so per-step throughput is comparable across
+# GPU configs. data_dir/eval_data_dir point at small stratified subsets
+# built via `create_local_subset` (see scripts/gcp/03_upload_data.sh) rather
+# than the full datasets. gcs_checkpoint_bucket/num_gpus are overridden per
+# candidate config by the calibration runner, not meant to be run as-is.
+data_dir: data/calibration_subset/train
+eval_data_dir: data/calibration_subset/eval
+device: auto
+precision: auto
+backbone: hf-hub:paige-ai/Virchow
+batch_size: 32
+seed: 0
+epochs_probe: 2
+lr_probe: 0.01
+epochs_lora: 2
+lr_lora: 0.0001
+lora_r: 8
+lora_alpha: 16
+target_modules: ["qkv"]
+checkpoint_every_steps: 5
+cache_dir: outputs/calibration/cache
+checkpoint_dir: outputs/calibration/checkpoints
+gcs_checkpoint_bucket: null
+num_gpus: 1

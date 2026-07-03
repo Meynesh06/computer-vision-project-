@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import torch
 import torch.nn as nn
 from timm.layers import SwiGLUPacked
@@ -88,6 +89,72 @@ def test_extract_embeddings_uses_cache_on_second_call(tmp_path):
     )
 
     assert np.allclose(second_embeddings, 0)
+
+
+class _CountingModel(nn.Module):
+    """Wraps a model to count forward() calls, so a resume test can verify
+    already-completed batches are not recomputed."""
+
+    def __init__(self, inner):
+        super().__init__()
+        self.inner = inner
+        self.call_count = 0
+
+    def forward(self, x):
+        self.call_count += 1
+        return self.inner(x)
+
+
+class _InterruptingDataLoader:
+    """Wraps a real dataloader and raises partway through iteration, to
+    simulate a preemption mid-embedding-extraction."""
+
+    def __init__(self, real_loader, fail_after):
+        self._real = real_loader
+        self._fail_after = fail_after
+
+    def __iter__(self):
+        for i, batch in enumerate(self._real):
+            if i >= self._fail_after:
+                raise RuntimeError("simulated interruption")
+            yield batch
+
+
+def test_extract_embeddings_resumes_without_recomputing_completed_batches(tmp_path):
+    model = load_backbone("fake/backbone", device="cpu", loader=fake_loader)
+    images = torch.rand(6, 3, 8, 8)
+    labels = torch.tensor([0, 1, 2, 0, 1, 2])
+    dataloader = DataLoader(TensorDataset(images, labels), batch_size=2)  # 3 batches
+    cache_path = tmp_path / "embeddings.npz"
+    partial_path = tmp_path / "embeddings.partial.npz"
+
+    interrupting = _InterruptingDataLoader(dataloader, fail_after=2)
+    with pytest.raises(RuntimeError):
+        extract_embeddings(
+            model,
+            interrupting,
+            device="cpu",
+            cache_path=cache_path,
+            checkpoint_every_batches=1,
+        )
+
+    assert partial_path.exists()
+    assert not cache_path.exists()
+
+    counting_model = _CountingModel(model)
+    embeddings, out_labels = extract_embeddings(
+        counting_model,
+        dataloader,
+        device="cpu",
+        cache_path=cache_path,
+        checkpoint_every_batches=1,
+    )
+
+    assert counting_model.call_count == 1  # only the 3rd (unfinished) batch recomputed
+    assert embeddings.shape == (6, 16)
+    assert out_labels.tolist() == [0, 1, 2, 0, 1, 2]
+    assert cache_path.exists()
+    assert not partial_path.exists()
 
 
 class FakeRawTokenBackbone(nn.Module):

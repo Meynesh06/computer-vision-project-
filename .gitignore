@@ -7,3 +7,39 @@
 
 # Subagent-driven-development scratch state (progress ledger, briefs, reports)
 .superpowers/
+.gstack/
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# OS
+.DS_Store
+
+# Dataset (~11GB zipped / ~27GB extracted) — fetched via scripts/download_data.sh,
+# never vendored into the repo
+data/
+
+# Training artifacts: embedding cache, checkpoints, calibration runs
+outputs/cache/
+outputs/checkpoints/
+outputs/calibration/
+outputs/local_smoke/
+outputs/.drafts/
+outputs/.plans/
+
+# Interview-prep scaffolding and personal study material — not part of the
+# published project
+MISSION.md
+NOTES.md
+RESOURCES.md
+notes/
+lessons/
+reference/
+assets/
+learning-records/
+graphify-out/
+docs/superpowers/plans/

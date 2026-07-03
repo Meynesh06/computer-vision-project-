@@ -8,6 +8,17 @@ def test_download_script_has_valid_bash_syntax():
     assert result.returncode == 0, result.stderr
 
 
+def test_download_script_has_real_zenodo_urls_not_a_placeholder():
+    script = open("scripts/download_data.sh").read()
+    assert "zenodo.org/records/1214456/files/NCT-CRC-HE-100K.zip" in script
+    assert "zenodo.org/records/1214456/files/CRC-VAL-HE-7K.zip" in script
+
+
+def test_download_script_supports_skip_download_flag():
+    script = open("scripts/download_data.sh").read()
+    assert "--skip-download" in script
+
+
 def test_download_script_subset_flag_calls_create_local_subset(tmp_path, monkeypatch):
     # Rather than hitting the network, verify --subset delegates to our tested
     # Python sampling function by running it against a fake "already downloaded" tree.

@@ -15,3 +15,5 @@ target_modules: ["qkv"]
 checkpoint_every_steps: 200
 cache_dir: outputs/cache
 checkpoint_dir: outputs/checkpoints
+gcs_checkpoint_bucket: null
+num_gpus: 1

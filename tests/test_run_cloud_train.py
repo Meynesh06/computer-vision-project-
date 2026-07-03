@@ -7,6 +7,8 @@ from PIL import Image
 
 from tissue_classifier.config import load_config
 from tissue_classifier.data import CLASS_NAMES
+from tissue_classifier.finetune import LoRAClassifier, attach_lora, get_lora_state
+import scripts.run_cloud_train as run_cloud_train_module
 from scripts.run_cloud_train import load_checkpoint, save_checkpoint
 
 # Every key `run_cloud_train.main()` reads off `config` before/while running
@@ -49,6 +51,7 @@ REQUIRED_LOCAL_SMOKE_CONFIG_KEYS = [
     [
         "configs/linear_probe.yaml",
         "configs/lora_finetune.yaml",
+        "configs/calibration.yaml",
     ],
 )
 def test_shipped_cloud_config_has_all_keys_main_needs(config_path):
@@ -154,3 +157,119 @@ def test_run_cloud_train_end_to_end_evaluates_on_eval_dir(tmp_path):
     assert "lora_metrics" in results
     checkpoint_dir = tmp_path / "checkpoints"
     assert (checkpoint_dir / "lora_checkpoint.pt").exists()
+
+
+def test_run_cloud_train_works_without_new_optional_keys(tmp_path):
+    """Explicit back-compat check: gcs_checkpoint_bucket/num_gpus absent
+    from config must not raise -- main() reads both via config.get() with
+    defaults, existing/local configs are untouched by their addition."""
+    train_dir = tmp_path / "train"
+    eval_dir = tmp_path / "eval"
+    _make_dataset(train_dir)
+    _make_dataset(eval_dir)
+
+    config_path = _write_cloud_config(tmp_path, train_dir, eval_dir)
+    config = load_config(str(config_path))
+    assert "gcs_checkpoint_bucket" not in config
+    assert "num_gpus" not in config
+
+    results = run_cloud_train_module.main(
+        str(config_path), backbone_loader=fake_loader, fresh=True
+    )
+    assert "probe_metrics" in results
+
+
+def test_run_cloud_train_resume_does_not_redo_completed_epochs(tmp_path, monkeypatch):
+    """Regression test for the resume-count bug: resuming from a checkpoint
+    saved at epoch 3 (out of 5) must only train epochs 3 and 4, not restart
+    from 0."""
+    train_dir = tmp_path / "train"
+    eval_dir = tmp_path / "eval"
+    _make_dataset(train_dir)
+    _make_dataset(eval_dir)
+
+    config_path = _write_cloud_config(tmp_path, train_dir, eval_dir)
+    config_path.write_text(
+        config_path.read_text().replace("epochs_lora: 1", "epochs_lora: 5")
+    )
+
+    # Pre-seed a checkpoint at epoch=3 using a matching-architecture
+    # classifier so load_lora_state succeeds against it.
+    backbone = FakeBackboneWithQKV()
+    lora_model = attach_lora(backbone, r=2, lora_alpha=4, target_modules=["qkv"])
+    classifier = LoRAClassifier(
+        lora_model, embedding_dim=8, num_classes=len(CLASS_NAMES)
+    )
+    save_checkpoint(
+        {"epoch": 3, "model_state": get_lora_state(classifier)},
+        tmp_path / "checkpoints",
+    )
+
+    captured_start_epochs = []
+    original_train_lora = run_cloud_train_module.train_lora
+
+    def spy_train_lora(*args, **kwargs):
+        captured_start_epochs.append(kwargs.get("start_epoch"))
+        return original_train_lora(*args, **kwargs)
+
+    monkeypatch.setattr(run_cloud_train_module, "train_lora", spy_train_lora)
+
+    run_cloud_train_module.main(str(config_path), backbone_loader=fake_loader, fresh=False)
+
+    assert captured_start_epochs == [3]
+
+
+def test_gcs_sync_called_when_bucket_configured(tmp_path, monkeypatch):
+    train_dir = tmp_path / "train"
+    eval_dir = tmp_path / "eval"
+    _make_dataset(train_dir)
+    _make_dataset(eval_dir)
+
+    config_path = _write_cloud_config(tmp_path, train_dir, eval_dir)
+    config_path.write_text(
+        config_path.read_text() + "\ngcs_checkpoint_bucket: gs://fake-bucket\n"
+    )
+
+    captured_commands = []
+
+    class _FakeCompletedProcess:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        captured_commands.append(cmd)
+        return _FakeCompletedProcess()
+
+    monkeypatch.setattr(run_cloud_train_module.subprocess, "run", fake_run)
+
+    run_cloud_train_module.main(str(config_path), backbone_loader=fake_loader, fresh=True)
+
+    assert captured_commands, "expected at least one gsutil call"
+    assert all(cmd[0] == "gsutil" for cmd in captured_commands)
+    assert any("gs://fake-bucket" in " ".join(cmd) for cmd in captured_commands)
+
+
+def test_gcs_sync_failure_does_not_crash_training(tmp_path, monkeypatch):
+    """A transient gsutil/network failure must not kill a training run --
+    sync is fail-soft."""
+    import subprocess
+
+    train_dir = tmp_path / "train"
+    eval_dir = tmp_path / "eval"
+    _make_dataset(train_dir)
+    _make_dataset(eval_dir)
+
+    config_path = _write_cloud_config(tmp_path, train_dir, eval_dir)
+    config_path.write_text(
+        config_path.read_text() + "\ngcs_checkpoint_bucket: gs://fake-bucket\n"
+    )
+
+    def failing_run(cmd, **kwargs):
+        raise subprocess.CalledProcessError(1, cmd)
+
+    monkeypatch.setattr(run_cloud_train_module.subprocess, "run", failing_run)
+
+    results = run_cloud_train_module.main(
+        str(config_path), backbone_loader=fake_loader, fresh=True
+    )
+
+    assert "probe_metrics" in results
